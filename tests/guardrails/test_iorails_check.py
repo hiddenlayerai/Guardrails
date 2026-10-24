@@ -277,6 +277,38 @@ class TestCheckAsyncAutoDetect:
         iorails.rails_manager.is_input_safe.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_user_content_parts_run_the_input_rails(self, iorails):
+        """A user turn whose content is a list of parts is checked, and reaches the rails whole."""
+        _mock_rails(iorails)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is in this image?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                ],
+            }
+        ]
+
+        result = await iorails.check_async(messages)
+
+        assert result.status == RailStatus.PASSED
+        assert result.content == "what is in this image?"
+        iorails.rails_manager.is_input_safe.assert_awaited_once_with(messages)
+
+    @pytest.mark.asyncio
+    async def test_image_only_user_content_runs_the_input_rails(self, iorails):
+        """A turn carrying parts but no text is still content a rail is entitled to check."""
+        _mock_rails(iorails)
+        messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://e/x.png"}}]}]
+
+        result = await iorails.check_async(messages)
+
+        assert result.status == RailStatus.PASSED
+        assert result.content == ""
+        iorails.rails_manager.is_input_safe.assert_awaited_once_with(messages)
+
+    @pytest.mark.asyncio
     async def test_system_and_user_runs_input(self, iorails):
         """A system+user conversation runs only input rails."""
         _mock_rails(iorails)
@@ -773,6 +805,11 @@ class TestCheckHelpers:
     def test_get_last_content_by_role_none_content_returns_empty(self):
         """content=None on the matched message is normalized to ''."""
         assert _get_last_content_by_role([{"role": "user", "content": None}], "user") == ""
+
+    def test_get_last_content_by_role_reads_the_text_of_a_content_part_list(self):
+        """A content-part list reports its text parts, not ''."""
+        content = [{"type": "text", "text": "hello"}, {"type": "image_url", "image_url": {"url": "https://e/x.png"}}]
+        assert _get_last_content_by_role([{"role": "user", "content": content}], "user") == "hello"
 
     def test_rewrite_last_assistant_message_rewrites_only_the_last(self):
         """Only the last assistant message is rewritten, the one output rails checked."""

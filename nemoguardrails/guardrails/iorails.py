@@ -28,7 +28,7 @@ import warnings
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from nemoguardrails.actions.rail_outcome import TransformTarget
 from nemoguardrails.base_guardrails import BaseGuardrails
@@ -539,17 +539,45 @@ def _determine_rails_from_messages(messages: list[dict]) -> Optional[dict]:
     return {"rails": ["output"]}
 
 
-def _get_last_content_by_role(messages: list[dict], role: str) -> str:
-    """Return the content of the last message with the given role, or "".
+def _content_text(content: Any) -> str:
+    """The text *content* carries, joining the text parts of a content-part list.
 
-    Non-string content (e.g. ``None`` on an assistant tool-call message) is
-    normalized to "" so it can flow into the ``str``-typed ``RailsResult.content``.
+    Any other content, such as ``None`` on an assistant tool-call message or a part of a
+    vocabulary this engine does not read, carries no text.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str)
+        )
+    return ""
+
+
+def _get_last_content_by_role(messages: list[dict], role: str) -> str:
+    """Return the text of the last message with the given role, or "".
+
+    The text is what flows into the ``str``-typed ``RailsResult.content``; the rails are given
+    the messages themselves, so a content-part list reaches them whole.
     """
     for msg in reversed(messages):
         if msg.get("role") == role:
-            content = msg.get("content")
-            return content if isinstance(content, str) else ""
+            return _content_text(msg.get("content"))
     return ""
+
+
+def _has_content_by_role(messages: list[dict], role: str) -> bool:
+    """Whether the last message with the given role carries content for a rail to check.
+
+    A content-part list carrying no text is still content: an image-only user turn is a turn
+    the rails are entitled to see, and reading it as empty would leave it unchecked.
+    """
+    for msg in reversed(messages):
+        if msg.get("role") == role:
+            return bool(msg.get("content"))
+    return False
 
 
 def _rail_type_configured(config: RailsConfig, rail_type: RailType) -> bool:
@@ -1715,10 +1743,9 @@ class IORails(BaseGuardrails):
                 return blocked
 
         if "input" in rails_to_run:
-            user_content = _get_last_content_by_role(messages, "user")
-            # Skip when there is no user content: the content-safety action requires
+            # Skip when the user turn carries no content: the content-safety action requires
             # user_input and would otherwise raise, surfacing a false BLOCK.
-            if user_content:
+            if _has_content_by_role(messages, "user"):
                 log.info("[%s] Running input rails", req_id)
                 input_result = await self.rails_manager.is_input_safe(messages)
                 conversation.record_masks(RailDirection.INPUT, pending=input_result.rewrite_pending)
